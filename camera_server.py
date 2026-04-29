@@ -135,32 +135,29 @@ def snapshot_client_loop(conn, addr):
         
         elif request.startswith(b'RECORD'):
             # save the last 120 frames (about 6 seconds) to a timestamped directory
-            with _lock:
-                history_copy = _raw_history.copy() # make a copy to minimize lock time
-                _raw_history.clear() # clear history after copying
+            with _lock: 
+                # will freeze the preview until all frames are saved to the jetson              
+                if not _raw_history:
+                    conn.sendall(struct.pack('>?', False)) # failure
+                    return
+                start_ts = _raw_history[0][0]
+                end_ts = _raw_history[-1][0]
+                save_dir = f"./recordings/record_{start_ts}_{end_ts}"
+                os.makedirs(save_dir, exist_ok=True)
                 
-                
-            if not history_copy:
-                conn.sendall(struct.pack('>?', False)) # failure
-                return
-            start_ts = history_copy[0][0]
-            end_ts = history_copy[-1][0]
-            save_dir = f"./recordings/record_{start_ts}_{end_ts}"
-            os.makedirs(save_dir, exist_ok=True)
-            
-            count = 0
-            while history_copy:
-                ts_ns, data = history_copy.popleft()
-                if data is None:
-                    continue
-                height, width = data.shape
-                png_filename = f"{save_dir}/snapshot_{count:03d}_{ts_ns:6d}_{width}x{height}_gray.png"
-                cv2.imwrite(png_filename, data)
-                print(f"Saved PNG snapshot {png_filename}")
-                count += 1
-                
-            conn.sendall(struct.pack('>?', True)) # success
-            print(f"[NET] Recorded {count} frames to {save_dir}")
+                count = 0
+                while _raw_history:
+                    ts_ns, data = _raw_history.popleft()
+                    if data is None:
+                        continue
+                    height, width = data.shape
+                    png_filename = f"{save_dir}/snapshot_{count:03d}_{ts_ns:6d}_{width}x{height}_gray.png"
+                    cv2.imwrite(png_filename, data)
+                    print(f"Saved PNG snapshot {png_filename}")
+                    count += 1
+                    
+                conn.sendall(struct.pack('>?', True)) # success
+                print(f"[NET] Recorded {count} frames to {save_dir}")
         else:
             print(f"[NET] Unknown snapshot request: {request}")
             conn.sendall(struct.pack('>?', False)) # failure

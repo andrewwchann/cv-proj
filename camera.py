@@ -112,10 +112,20 @@ class CameraReceiver:
                 if not success:
                     print("[CAM] Snapshot request failed on server")
                     return False
+                print("[CAM] Snapshot request succeeded on server")
+                return True
                 
             elif cmd == ord('r'):
                 # send RAW request to camera server on the jetson
                 sock.sendall(b"RECORD")
+                rsp = self.read_exact(sock, 1)
+                success = struct.unpack('>?', rsp)[0]
+                if not success:
+                    print("[CAM] Record request failed on server")
+                    return False
+                print("[CAM] Record request succeeded on server")
+                return True
+                
                 
             
             # read the response packet
@@ -194,7 +204,8 @@ def main():
         
         if (key == ord('s') or key == ord('r')) and frame is not None:
             if cam.save_raw_snapshot(frame_id=frame_id, cmd=key):
-                frame_id += 1
+                if key == ord('s'):
+                    frame_id += 1
         if key in (ord('q'), 27):
             break
 
