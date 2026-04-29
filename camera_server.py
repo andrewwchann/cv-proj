@@ -57,7 +57,7 @@ def capture_loop():
                 with _lock:
                     _preview_frame = buf.tobytes()
                     _preview_ts_ns = ts_ns
-                    _raw_history.append((ts_ns, img.copy())) # store raw grey frame in history
+                    _raw_history.append((ts_ns, img.copy())) # store a COPY of raw grey frame 
         else:
             fail_count += 1
             if fail_count == 1 or fail_count % 100 == 0:
@@ -136,28 +136,32 @@ def snapshot_client_loop(conn, addr):
         elif request.startswith(b'RECORD'):
             # save the last 120 frames (about 6 seconds) to a timestamped directory
             with _lock: 
-                # will freeze the preview until all frames are saved to the jetson              
                 if not _raw_history:
                     conn.sendall(struct.pack('>?', False)) # failure
                     return
-                start_ts = _raw_history[0][0]
-                end_ts = _raw_history[-1][0]
-                save_dir = f"./recordings/record_{start_ts}_{end_ts}"
-                os.makedirs(save_dir, exist_ok=True)
+                history_copy = list(_raw_history) # make a copy of the history to release lock sooner
                 
-                count = 0
-                while _raw_history:
-                    ts_ns, data = _raw_history.popleft()
-                    if data is None:
-                        continue
-                    height, width = data.shape
-                    png_filename = f"{save_dir}/snapshot_{count:03d}_{ts_ns:6d}_{width}x{height}_gray.png"
-                    cv2.imwrite(png_filename, data)
-                    print(f"Saved PNG snapshot {png_filename}")
-                    count += 1
-                    
-                conn.sendall(struct.pack('>?', True)) # success
-                print(f"[NET] Recorded {count} frames to {save_dir}")
+                # history copy holds the frames for this recording, and _raw_history is cleared for preview to continue
+                _raw_history.clear()
+            
+            start_ts = history_copy[0][0]
+            end_ts = history_copy[-1][0]
+            save_dir = f"./recordings/record_{start_ts}_{end_ts}"
+            os.makedirs(save_dir, exist_ok=True)
+            
+            for count, (ts_ns, data) in enumerate(history_copy):
+                if data is None:
+                    continue
+                height, width = data.shape
+                png_filename = f"{save_dir}/snapshot_{count:03d}_{ts_ns:6d}_{width}x{height}_gray.png"
+                ok = cv2.imwrite(png_filename, data)
+                if not ok:
+                    conn.sendall(struct.pack('>?', False))
+                    return
+                print(f"Saved PNG snapshot {png_filename}")
+                
+            conn.sendall(struct.pack('>?', True)) # success
+            print(f"[NET] Recorded {count} frames to {save_dir}")
         else:
             print(f"[NET] Unknown snapshot request: {request}")
             conn.sendall(struct.pack('>?', False)) # failure
