@@ -12,6 +12,9 @@ import struct
 import threading
 import time
 from collections import deque
+import sys
+import subprocess
+import csv
 
 PORT         = 9999
 SNAPSHOT_PORT = 9998
@@ -31,6 +34,20 @@ if not cap.isOpened():
     raise RuntimeError("Could not open CSI camera sensor-id=0")
 print("[CAM] Camera opened")
 
+left, right = True, False
+def change_camera():
+    global cap, left, right
+    if left and not right:        left, right = False, True
+    elif right and not left:      left, right = True, False
+    else:                        print("Error: invalid camera state")
+    cap.release()
+    new_pipeline = gst_pipeline().replace("sensor-id=0", "sensor-id=1")
+    
+    cap = cv2.VideoCapture(new_pipeline, cv2.CAP_GSTREAMER)
+    if not cap.isOpened():
+        return False
+    print("[CAM] Switched to camera sensor-id=1")
+    
 _lock  = threading.Lock()
 # _frame = None
 _preview_frame = None
@@ -67,7 +84,8 @@ def capture_loop():
         if now - last_log >= 5.0:
             print(f"[CAM] frames captured in last 5s: {frame_count}")
             frame_count = 0
-            last_log = now
+            last_log = now            
+            
 
 def preview_client_loop(conn, addr):
     print(f"[NET] Client connected: {addr}")
@@ -126,7 +144,7 @@ def snapshot_client_loop(conn, addr):
             
             if data is not None:
                 height, width = data.shape
-                png_filename = f".images/png/snapshot_{ts_ns:6d}_{width}x{height}_gray.png"
+                png_filename = f"./images/png/snapshot_{ts_ns:6d}_{width}x{height}_gray.png"
                 cv2.imwrite(png_filename, data)
                 print(f"Saved PNG snapshot {png_filename}")
                 conn.sendall(struct.pack('>?', True)) # success
@@ -162,6 +180,11 @@ def snapshot_client_loop(conn, addr):
                 
             conn.sendall(struct.pack('>?', True)) # success
             print(f"[NET] Recorded {count} frames to {save_dir}")
+        elif request.startswith(b'CHANGE'):
+            if not change_camera():
+                conn.sendall(struct.pack('>?', False)) # failure
+            else:
+                conn.sendall(struct.pack('>?', True)) # success
         else:
             print(f"[NET] Unknown snapshot request: {request}")
             conn.sendall(struct.pack('>?', False)) # failure
@@ -216,9 +239,33 @@ def serve_snapshot():
         snap_srv.close()
     
 
+def check_temp():
+    os.makedirs("./temps", exist_ok=True)
+    temps_filename = f"./temps/temps_{int(time.time())}.csv"
+    
+    with open(temps_filename, "w", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow(["timestamp_ns", "temps_output"])
+    
+    while True:
+        temps = subprocess.run([sys.executable, "read_temp.py"], capture_output=True, text=True)
+        
+        temps = temps.stdout.strip()
+
+        if temps:
+            print(f"[TEMP] {temps}")
+                    
+        with open(temps_filename, 'a') as f:
+            writer = csv.writer(f)
+            writer.writerow([int(time.time()), temps])
+        
+        print(f"[TEMP] Logged temperatures to {temps_filename}")
+        time.sleep(10)
+        
 threading.Thread(target=capture_loop, daemon=True).start()
 threading.Thread(target=serve_preview, daemon=True).start()
 threading.Thread(target=serve_snapshot, daemon=True).start()
+threading.Thread(target=check_temp, daemon=True).start()
 
 try:
     while True:

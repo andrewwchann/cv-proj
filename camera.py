@@ -179,6 +179,34 @@ class CameraReceiver:
                     sock.close()
                 except Exception:
                     pass
+    
+    def change_cam(self):
+        sock = None
+        try:
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.settimeout(10.0)
+            sock.connect((self._host, self._capture_port))
+            sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+        
+            sock.sendall(b"CHANGE")
+            rsp = self.read_exact(sock, 1)
+            success = struct.unpack('>?', rsp)[0]
+            if not success:
+                print("[CAM] Change camera request failed on server")
+                return False
+            print("[CAM] Change camera request succeeded on server")
+            return True
+            
+        except Exception as e:
+            print(f"[CAM] Failed to change camera: {e}")
+            return False
+        
+        finally:
+            if sock:
+                try:
+                    sock.close()
+                except Exception:
+                    pass
             
             
             
@@ -206,6 +234,9 @@ def main():
             if cam.save_raw_snapshot(frame_id=frame_id, cmd=key):
                 if key == ord('s'):
                     frame_id += 1
+        if (key == ord('c')):
+            if cam.change_cam():
+                print("[CAM] Camera change requested successfully")
         if key in (ord('q'), 27):
             break
 
