@@ -5,12 +5,14 @@ Streams JPEG frames over TCP with 4-byte length prefix (same protocol as Simon's
 Usage: python3 camera_server.py
 """
 import cv2
+import json
 import numpy as np
 import os
 import socket
 import struct
 import threading
 import time
+from datetime import datetime
 from collections import deque
 import sys
 import subprocess
@@ -34,19 +36,22 @@ if not cap.isOpened():
     raise RuntimeError("Could not open CSI camera sensor-id=0")
 print("[CAM] Camera opened")
 
-left, right = True, False
+left = True
 def change_camera():
-    global cap, left, right
-    if left and not right:        left, right = False, True
-    elif right and not left:      left, right = True, False
-    else:                        print("Error: invalid camera state")
+    global cap, left
     cap.release()
-    new_pipeline = gst_pipeline().replace("sensor-id=0", "sensor-id=1")
-    
+    if left:
+        new_pipeline = gst_pipeline().replace("sensor-id=0", "sensor-id=1")
+        left = False
+    else:
+        new_pipeline = gst_pipeline().replace("sensor-id=1", "sensor-id=0")
+        left = True
+
     cap = cv2.VideoCapture(new_pipeline, cv2.CAP_GSTREAMER)
     if not cap.isOpened():
         return False
     print("[CAM] Switched to camera sensor-id=1")
+    return True
     
 _lock  = threading.Lock()
 # _frame = None
@@ -144,7 +149,10 @@ def snapshot_client_loop(conn, addr):
             
             if data is not None:
                 height, width = data.shape
-                png_filename = f"./images/png/snapshot_{ts_ns:6d}_{width}x{height}_gray.png"
+                if left: 
+                    png_filename = f"./images/png/snapshot_{ts_ns:6d}_left_{width}x{height}_gray.png"
+                else:
+                    png_filename = f"./images/png/snapshot_{ts_ns:6d}_right_{width}x{height}_gray.png"
                 cv2.imwrite(png_filename, data)
                 print(f"Saved PNG snapshot {png_filename}")
                 conn.sendall(struct.pack('>?', True)) # success
@@ -171,7 +179,10 @@ def snapshot_client_loop(conn, addr):
                 if data is None:
                     continue
                 height, width = data.shape
-                png_filename = f"{save_dir}/snapshot_{count:03d}_{ts_ns:6d}_{width}x{height}_gray.png"
+                if left:
+                    png_filename = f"{save_dir}/snapshot_{count:03d}_{ts_ns:6d}_left_{width}x{height}_gray.png"
+                else:
+                    png_filename = f"{save_dir}/snapshot_{count:03d}_{ts_ns:6d}_right_{width}x{height}_gray.png"
                 ok = cv2.imwrite(png_filename, data)
                 if not ok:
                     conn.sendall(struct.pack('>?', False))
@@ -245,20 +256,51 @@ def check_temp():
     
     with open(temps_filename, "w", newline="") as f:
         writer = csv.writer(f)
-        writer.writerow(["timestamp_ns", "temps_output"])
+        writer.writerow(["timestamp(jetson time)", "bus9_hex", "bus10_hex", "bus9_raw", "bus10_raw", "bus9_temp_c", "bus10_temp_c"])
     
     while True:
-        temps = subprocess.run([sys.executable, "read_temp.py"], capture_output=True, text=True)
-        
-        temps = temps.stdout.strip()
+        result = subprocess.run([sys.executable, "read_temp.py"], capture_output=True, text=True)
+        output = result.stdout.strip()
 
-        if temps:
-            print(f"[TEMP] {temps}")
-                    
-        with open(temps_filename, 'a') as f:
+        if output:
+            print(f"[TEMP] {output}")
+            try:
+                data = json.loads(output)
+            except json.JSONDecodeError:
+                data = {}
+        else:
+            data = {}
+
+        bus9 = {"reg": "", "raw": "", "temp": ""}
+        bus10 = {"reg": "", "raw": "", "temp": ""}
+
+        # if the output is valid JSON, extract the temperature data for bus 9 and bus 10
+        if isinstance(data, dict):
+            b9 = data.get("9", {})
+            b10 = data.get("10", {})
+            bus9 = {
+                "reg": b9.get("register", ""),
+                "raw": b9.get("raw", ""),
+                "temp": b9.get("temp_c", ""),
+            }
+            bus10 = {
+                "reg": b10.get("register", ""),
+                "raw": b10.get("raw", ""),
+                "temp": b10.get("temp_c", ""),
+            }
+
+        with open(temps_filename, "a", newline="") as f:
             writer = csv.writer(f)
-            writer.writerow([int(time.time()), temps])
-        
+            writer.writerow([
+                datetime.now().strftime("%H:%M:%S"),
+                bus9["reg"],
+                bus10["reg"],
+                bus9["raw"],
+                bus10["raw"],
+                bus9["temp"],
+                bus10["temp"],
+            ])
+
         print(f"[TEMP] Logged temperatures to {temps_filename}")
         time.sleep(10)
         
